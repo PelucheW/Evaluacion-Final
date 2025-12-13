@@ -1,0 +1,62 @@
+﻿using Microsoft.AspNetCore.Mvc;
+using ProyectoFinalTecWeb.Entities;
+using ProyectoFinalTecWeb.Entities.Dtos.VehicleDto;
+using ProyectoFinalTecWeb.Services;
+
+namespace ProyectoFinalTecWeb.Controllers
+{
+    [ApiController]
+    [Route("api/vehicle")]
+    public class VehicleController : ControllerBase
+    {
+        private readonly IVehicleService _service;
+
+        public VehicleController(IVehicleService service)
+        {
+            _service = service;
+        }
+
+        // POST: api/vehicle
+        [HttpPost]
+        public async Task<IActionResult> Create([FromBody] CreateVehicleDto dto)
+        {
+            var id = await _service.CreateAsync(dto);
+            return CreatedAtAction(nameof(GetById), new { id }, new { id });
+        }
+
+        // GET: api/vehicle
+        [HttpGet]
+        public async Task<IActionResult> GetAllVehicles()
+        {
+            IEnumerable<Vehicle> items = await _service.GetAll();
+            return Ok(items);
+        }
+
+        // GET: api/vehicle/{id}
+        [HttpGet("{id:guid}")]
+        public async Task<IActionResult> GetById([FromRoute] Guid id)
+        {
+            var data = await _service.GetByIdAsync(id);
+            if (data == null) return NotFound();
+            return Ok(data);
+        }
+
+        // PUT: api/vehicle/{id}
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> Update([FromRoute] Guid id, [FromBody] UpdateVehicleDto dto)
+        {
+            if (!ModelState.IsValid) return ValidationProblem(ModelState);
+            var vehicle = await _service.UpdateAsync(dto, id);
+            return CreatedAtAction(nameof(GetById), new { id = vehicle.Id }, vehicle);
+        }
+
+        // DELETE: api/vehicle/{id}
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> Delete([FromRoute] Guid id)
+        {
+            if (!ModelState.IsValid) return ValidationProblem(ModelState);
+            await _service.DeleteAsync(id);
+            return NoContent();
+        }
+    }
+}
