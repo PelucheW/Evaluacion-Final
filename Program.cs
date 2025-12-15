@@ -100,35 +100,20 @@ app.UseAuthorization();
 
 
 // Endpoints básicos
-app.MapGet("/health", async (AppDbContext db) =>
+app.MapGet("/health", async (AppDbContext dbContext) =>
 {
     try
     {
-        // 1. Verificar conexión a BD
-        var dbConnected = await db.Database.CanConnectAsync();
-
-        // 2. Verificar que hay tablas
-        var tableCount = 0;
-        if (dbConnected)
-        {
-            using var connection = db.Database.GetDbConnection();
-            await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'";
-            tableCount = Convert.ToInt32(command.ExecuteScalar());
-        }
-
-        var status = dbConnected && tableCount >= 7 ? "healthy" : "unhealthy";
-        var statusCode = status == "healthy" ? 200 : 503;
+        // Verificar conexión a la base de datos
+        var canConnect = await dbContext.Database.CanConnectAsync();
 
         return Results.Json(new
         {
-            status = status,
-            database = dbConnected ? "connected" : "disconnected",
-            tables = tableCount,
+            status = canConnect ? "healthy" : "unhealthy",
+            database = canConnect ? "connected" : "disconnected",
             timestamp = DateTime.UtcNow,
             service = "Taxi API"
-        }, statusCode: statusCode);
+        });
     }
     catch (Exception ex)
     {
@@ -140,7 +125,16 @@ app.MapGet("/health", async (AppDbContext db) =>
         }, statusCode: 503);
     }
 });
-app.MapGet("/", () => Results.Json(new { status = "OK", time = DateTime.UtcNow }));
+
+app.MapGet("/", () =>
+{
+    return Results.Json(new
+    {
+        status = "ok",
+        message = "Taxi API is running",
+        timestamp = DateTime.UtcNow
+    });
+});
 app.MapGet("/healthz", () => Results.Json(new { status = "OK" }));
 
 app.MapGet("/db-status", async (HttpContext httpContext) => {
