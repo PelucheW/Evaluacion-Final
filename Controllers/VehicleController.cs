@@ -27,7 +27,6 @@ namespace ProyectoFinalTecWeb.Controllers
 
         // POST: api/vehicle
         [HttpPost]
-        [Authorize(Policy = "DriverOnly")]
         public async Task<IActionResult> Create([FromBody] CreateVehicleDto dto)
         {
             var id = await _service.CreateAsync(dto);

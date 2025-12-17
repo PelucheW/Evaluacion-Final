@@ -1,68 +1,46 @@
+using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using ProyectoFinalTecWeb.Data;
-using ProyectoFinalTecWeb.Repositories;
 using ProyectoFinalTecWeb.Services;
+using ProyectoFinalTecWeb.Repositories;
 using System.Security.Claims;
 using System.Text;
-using System.Text.Json.Serialization;
+
+//dotnet add package DotNetEnv
+
 
 var builder = WebApplication.CreateBuilder(args);
-var isDatabaseInitialized = false;
+Env.Load();
 
-// Configurar logging
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.AddDebug();
-
-// Mostrar variables de entorno
-Console.WriteLine("=== ENVIRONMENT VARIABLES ===");
-var envVars = new[] { "DATABASE_URL", "JWT_KEY", "JWT_ISSUER", "JWT_AUDIENCE", "PORT" };
-foreach (var envVar in envVars)
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrEmpty(port))
 {
-    var value = Environment.GetEnvironmentVariable(envVar);
-    Console.WriteLine($"{envVar}: {(string.IsNullOrEmpty(value) ? "NOT SET" : "SET")}");
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 }
-Console.WriteLine("==============================");
 
-// Puerto para Railway
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
-Console.WriteLine($"Server will run on port: {port}");
-
-// Servicios básicos
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
-builder.Services.AddCors(options =>
-    options.AddPolicy("AllowAll", p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
-
-// JWT
-var jwtKey = Environment.GetEnvironmentVariable("JWT_KEY")
-    ?? throw new InvalidOperationException("JWT_KEY environment variable is not set");
-var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? "TaxiApi";
-var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? "TaxiClient";
-
-Console.WriteLine($"JWT - Issuer: {jwtIssuer}, Audience: {jwtAudience}");
-
-// Procesar JWT_KEY
-byte[] keyBytes;
-try
+builder.Services.AddCors(opt =>
 {
-    keyBytes = Convert.FromBase64String(jwtKey);
-}
-catch (FormatException)
-{
-    Console.WriteLine("WARNING: JWT_KEY is not valid Base64, using as UTF-8 string");
-    keyBytes = Encoding.UTF8.GetBytes(jwtKey.PadRight(32, '=')[..32]);
-}
+    opt.AddPolicy("AllowAll", p => p
+        .AllowAnyOrigin()
+        .AllowAnyHeader()
+        .AllowAnyMethod());
+});
 
-// CONFIGURACIÓN JWT
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+var jwtKey = Environment.GetEnvironmentVariable("JWT_KEY");
+var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER");
+var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE");
+var keyBytes = Convert.FromBase64String(jwtKey!);
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(o =>
     {
-        options.TokenValidationParameters = new TokenValidationParameters
+        o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
             ValidateAudience = true,
@@ -75,359 +53,75 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ClockSkew = TimeSpan.Zero
         };
     });
-
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("DriverOnly", p => p.RequireRole("Driver"));
     options.AddPolicy("PassengerOnly", p => p.RequireRole("Passenger"));
 });
+var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL");
 
-// Configurar conexión a PostgreSQL
-var connectionString = GetConnectionString();
-Console.WriteLine($"Connection String (masked): {GetMaskedConnectionString(connectionString)}");
+if (!string.IsNullOrEmpty(connectionString) &&
+    (connectionString.StartsWith("postgres://") || connectionString.StartsWith("postgresql://")))
+{
+    var uri = new Uri(connectionString);
 
-// Registrar DbContext
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(connectionString)
-           .LogTo(Console.WriteLine, LogLevel.Information)
-           .EnableSensitiveDataLogging(false));
+    var userInfo = uri.UserInfo.Split(':', 2);
+    var user = Uri.UnescapeDataString(userInfo[0]);
+    var pass = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "";
 
-// Registrar servicios
-RegisterServices(builder.Services);
-
-builder.Services.AddControllers()
-    .AddJsonOptions(options =>
+    var builderCs = new NpgsqlConnectionStringBuilder
     {
-        options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
-        options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-    });
+        Host = uri.Host,
+        Port = uri.Port,
+        Username = user,
+        Password = pass,
+        Database = uri.AbsolutePath.Trim('/'),
+        SslMode = SslMode.Require,
+        TrustServerCertificate = true
+    };
+
+    connectionString = builderCs.ConnectionString;
+}
+
+if (string.IsNullOrEmpty(connectionString))
+{
+    Console.WriteLine("Using local database configuration.");
+    // fallback local si quieres
+    var dbName = Environment.GetEnvironmentVariable("POSTGRES_DB");
+    var dbUser = Environment.GetEnvironmentVariable("POSTGRES_USER");
+    var dbPass = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+    var dbHost = Environment.GetEnvironmentVariable("POSTGRES_HOST") ?? "localhost";
+    var dbPort = Environment.GetEnvironmentVariable("POSTGRES_PORT") ?? "5432";
+
+    connectionString = $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPass}";
+}
+builder.Services.AddDbContext<AppDbContext>(opt =>
+opt.UseNpgsql(connectionString));
+
+builder.Services.AddScoped<IDriverRepository, DriverRepository>();
+builder.Services.AddScoped<IPassengerRepository, PassengerRepository>();
+builder.Services.AddScoped<ITripRepository, TripRepository>();
+builder.Services.AddScoped<IVehicleRepository, VehicleRepository>();
+builder.Services.AddScoped<IModelRepository, ModelRepository>();
+
+builder.Services.AddScoped<IDriverService, DriverService>();
+builder.Services.AddScoped<IPassengerService, PassengerService>();
+builder.Services.AddScoped<ITripService, TripService>();
+builder.Services.AddScoped<IVehicleService, VehicleService>();
+builder.Services.AddScoped<IModelService, ModelService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IDriverVehicleService, DriverVehicleService>();
 
 var app = builder.Build();
 
-// Pipeline HTTP
+// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+    app.UseHttpsRedirection();
 }
-
-app.UseCors("AllowAll");
 app.UseAuthentication();
 app.UseAuthorization();
-
-// base de datos
-await SetupDatabaseAsync(app);
-
-// Endpoints básicos
-app.MapGet("/health", async (AppDbContext dbContext) =>
-{
-    try
-    {
-        if (!isDatabaseInitialized)
-        {
-            return Results.Json(new
-            {
-                status = "initializing",
-                message = "Database is being initialized",
-                timestamp = DateTime.UtcNow
-            }, statusCode: 202);
-        }
-
-        var canConnect = await dbContext.Database.CanConnectAsync();
-        return Results.Json(new
-        {
-            status = canConnect ? "healthy" : "unhealthy",
-            database = canConnect ? "connected" : "disconnected",
-            timestamp = DateTime.UtcNow,
-            service = "Taxi API"
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new
-        {
-            status = "unhealthy",
-            error = ex.Message,
-            timestamp = DateTime.UtcNow
-        }, statusCode: 503);
-    }
-});
-
-app.MapGet("/", () =>
-{
-    return Results.Json(new
-    {
-        status = "ok",
-        message = "Taxi API is running",
-        timestamp = DateTime.UtcNow
-    });
-});
-
-app.MapGet("/healthz", () => Results.Json(new { status = "OK" }));
-
-app.MapGet("/db-status", async (HttpContext httpContext) => {
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-        var canConnect = await db.Database.CanConnectAsync();
-        var tables = new List<string>();
-
-        if (canConnect)
-        {
-            using var connection = db.Database.GetDbConnection();
-            await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandText = @"
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                ORDER BY table_name";
-
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-            {
-                tables.Add(reader.GetString(0));
-            }
-        }
-
-        await httpContext.Response.WriteAsJsonAsync(new
-        {
-            database_connected = canConnect,
-            table_count = tables.Count,
-            tables = tables,
-            timestamp = DateTime.UtcNow
-        });
-    }
-    catch (Exception ex)
-    {
-        await httpContext.Response.WriteAsJsonAsync(new
-        {
-            database_connected = false,
-            error = ex.Message,
-            timestamp = DateTime.UtcNow
-        });
-    }
-});
-
 app.MapControllers();
 
-// Middleware para loggear todas las peticiones
-app.Use(async (context, next) =>
-{
-    var start = DateTime.UtcNow;
-    Console.WriteLine($"[{start:HH:mm:ss.fff}] ? {context.Request.Method} {context.Request.Path}");
-
-    await next();
-
-    var end = DateTime.UtcNow;
-    var duration = (end - start).TotalMilliseconds;
-    Console.WriteLine($"[{end:HH:mm:ss.fff}] ? {context.Response.StatusCode} ({duration:F0}ms)");
-});
-
-Console.WriteLine($"Health check available at: http://0.0.0.0:{port}/health");
-Console.WriteLine($"API ready at: http://0.0.0.0:{port}/api");
-Console.WriteLine($"Database status: http://0.0.0.0:{port}/db-status");
-
-Console.WriteLine("Application is starting...");
-
 app.Run();
-
-// Funciones auxiliares
-string GetConnectionString()
-{
-    // 1. Intentar con DATABASE_URL de Railway
-    var railwayUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
-
-    if (!string.IsNullOrEmpty(railwayUrl))
-    {
-        Console.WriteLine("Using Railway DATABASE_URL");
-        try
-        {
-            var uri = new Uri(railwayUrl);
-            Console.WriteLine($"   Database host: {uri.Host}");
-            Console.WriteLine($"   Database port: {uri.Port}");
-            Console.WriteLine($"   Database name: {uri.AbsolutePath.Trim('/')}");
-
-            var userInfo = uri.UserInfo.Split(':');
-            var username = Uri.UnescapeDataString(userInfo[0]);
-
-            var cs = new NpgsqlConnectionStringBuilder
-            {
-                Host = uri.Host,
-                Port = uri.Port,
-                Database = uri.AbsolutePath.Trim('/'),
-                Username = username,
-                Password = userInfo.Length > 1 ? Uri.UnescapeDataString(userInfo[1]) : "",
-                SslMode = SslMode.Require,
-                TrustServerCertificate = true,
-                Pooling = true,
-                MaxPoolSize = 10,
-                Timeout = 30,
-                CommandTimeout = 30
-            };
-
-            return cs.ToString();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error parsing DATABASE_URL: {ex.Message}");
-        }
-    }
-
-    // 2. Variables individuales
-    Console.WriteLine("Using individual environment variables");
-    var dbHost = Environment.GetEnvironmentVariable("PGHOST") ?? "localhost";
-    var dbPort = Environment.GetEnvironmentVariable("PGPORT") ?? "5432";
-    var dbName = Environment.GetEnvironmentVariable("PGDATABASE") ?? "TaxiDB";
-    var dbUser = Environment.GetEnvironmentVariable("PGUSER") ?? "postgres";
-    var dbPass = Environment.GetEnvironmentVariable("PGPASSWORD") ?? "postgres";
-
-    Console.WriteLine($"   Host: {dbHost}, Database: {dbName}, User: {dbUser}");
-
-    return $"Host={dbHost};Port={dbPort};Database={dbName};Username={dbUser};Password={dbPass};" +
-           "SSL Mode=Require;Trust Server Certificate=true";
-}
-
-string GetMaskedConnectionString(string connectionString)
-{
-    try
-    {
-        var builder = new NpgsqlConnectionStringBuilder(connectionString);
-        return $"Host={builder.Host};Port={builder.Port};Database={builder.Database};Username={builder.Username};Password=***";
-    }
-    catch
-    {
-        return "Invalid connection string";
-    }
-}
-
-void RegisterServices(IServiceCollection services)
-{
-    services.AddScoped<IDriverRepository, DriverRepository>();
-    services.AddScoped<IPassengerRepository, PassengerRepository>();
-    services.AddScoped<ITripRepository, TripRepository>();
-    services.AddScoped<IVehicleRepository, VehicleRepository>();
-    services.AddScoped<IModelRepository, ModelRepository>();
-
-    services.AddScoped<IDriverService, DriverService>();
-    services.AddScoped<IPassengerService, PassengerService>();
-    services.AddScoped<ITripService, TripService>();
-    services.AddScoped<IVehicleService, VehicleService>();
-    services.AddScoped<IModelService, ModelService>();
-    services.AddScoped<IAuthService, AuthService>();
-    services.AddScoped<IDriverVehicleService, DriverVehicleService>();
-}
-
-async Task SetupDatabaseAsync(WebApplication app)
-{
-    Console.WriteLine("\nSETTING UP DATABASE...");
-
-    // Crear un scope MANUALMENTE
-    var scopeFactory = app.Services.GetRequiredService<IServiceScopeFactory>();
-
-    using var scope = scopeFactory.CreateScope();
-    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-    try
-    {
-        // 1. Verificar conexión
-        Console.WriteLine("Testing database connection...");
-        var canConnect = await dbContext.Database.CanConnectAsync();
-
-        if (!canConnect)
-        {
-            Console.WriteLine("Cannot connect to database");
-            Console.WriteLine("Connection string used: " + GetMaskedConnectionString(dbContext.Database.GetConnectionString()));
-            return;
-        }
-
-        Console.WriteLine("Database connection successful");
-
-        // 2. Verificar si existe la tabla de migraciones
-        Console.WriteLine("Checking for migrations table...");
-        using var connection = dbContext.Database.GetDbConnection();
-        await connection.OpenAsync();
-
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '__efmigrationshistory'";
-        var migrationsTableExists = (long)command.ExecuteScalar()! > 0;
-
-        Console.WriteLine($"Migrations table exists: {migrationsTableExists}");
-
-        // 3. Verificar archivos de migración en el proyecto
-        var migrationFilesExist = Directory.Exists("Data/Migrations") &&
-                                 Directory.GetFiles("Data/Migrations", "*.cs").Length > 0;
-        Console.WriteLine($"Migration files in project: {migrationFilesExist}");
-
-        if (migrationFilesExist)
-        {
-            // Intentar usar migraciones
-            try
-            {
-                Console.WriteLine("Attempting to apply migrations...");
-                await dbContext.Database.MigrateAsync();
-                Console.WriteLine("Migrations applied successfully");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error applying migrations: {ex.Message}");
-                Console.WriteLine("Falling back to EnsureCreated...");
-                await dbContext.Database.EnsureCreatedAsync();
-                Console.WriteLine("Database created via EnsureCreated");
-            }
-        }
-        else
-        {
-            // No hay archivos de migración, usar EnsureCreated
-            Console.WriteLine("No migration files found. Using EnsureCreated...");
-            await dbContext.Database.EnsureCreatedAsync();
-            Console.WriteLine("Database created via EnsureCreated");
-        }
-
-        // 4. Verificar tablas creadas
-        Console.WriteLine("\nCHECKING CREATED TABLES:");
-        command.CommandText = @"
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            ORDER BY table_name";
-
-        using var reader = await command.ExecuteReaderAsync();
-        var tables = new List<string>();
-        while (await reader.ReadAsync())
-        {
-            tables.Add(reader.GetString(0));
-        }
-
-        Console.WriteLine($"Total tables: {tables.Count}");
-        foreach (var table in tables)
-        {
-            Console.WriteLine($"  - {table}");
-        }
-
-        if (tables.Count == 0)
-        {
-            Console.WriteLine("WARNING: No tables were created!");
-            Console.WriteLine("This might indicate:");
-            Console.WriteLine("  1. Connection to wrong database");
-            Console.WriteLine("  2. Database user lacks CREATE permissions");
-            Console.WriteLine("  3. Entity Framework configuration issue");
-        }
-
-        Console.WriteLine("DATABASE SETUP COMPLETE\n");
-        isDatabaseInitialized = true;
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"DATABASE SETUP FAILED: {ex.Message}");
-        Console.WriteLine($"Exception type: {ex.GetType().Name}");
-        Console.WriteLine($"Stack trace: {ex.StackTrace}");
-
-        // Para debugging: mostrar inner exception si existe
-        if (ex.InnerException != null)
-        {
-            Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
-        }
-    }
-}
