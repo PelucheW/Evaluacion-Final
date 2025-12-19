@@ -64,5 +64,10 @@ namespace ProyectoFinalTecWeb.Repositories
             _ctx.Passengers.Update(passenger);
             await _ctx.SaveChangesAsync();
         }
+        public async Task<Passenger?> GetByPasswordResetToken(string token)
+        {
+            return await _ctx.Passengers
+                .FirstOrDefaultAsync(p => p.PasswordResetToken == token);
+        }
     }
 }

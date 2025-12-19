@@ -11,5 +11,8 @@ namespace ProyectoFinalTecWeb.Services
         Task<string> RegisterPassengerAsync(RegisterPassengerDto dto);
         Task<(bool ok, LoginResponseDto? response)> RefreshAsync(RefreshRequestDto dto);
 
+        Task<bool> ForgotPasswordAsync(string email);
+        Task<bool> ResetPasswordAsync(string token, string newPassword);
+
     }
 }

@@ -48,5 +48,24 @@ namespace ProyectoFinalTecWeb.Controllers
             if (!ok || response is null) return Unauthorized();
             return Ok(response);
         }
+
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
+        {
+            var ok = await _service.ForgotPasswordAsync(dto.Email);
+            if (!ok) return BadRequest("Email no encontrado");
+
+            return Ok("Se envio el correo para restablecer la contraseña");
+        }
+
+        // POST: api/auth/reset-password
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto dto)
+        {
+            var ok = await _service.ResetPasswordAsync(dto.Token, dto.NewPassword);
+            if (!ok) return BadRequest("Token inválido o expirado");
+
+            return Ok("Contraseña actualizada correctamente");
+        }
     }
 }
